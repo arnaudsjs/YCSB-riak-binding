@@ -42,15 +42,27 @@ public class TestRiakClient {
 		// Insert operation
 		HashMap<String, ByteIterator> map = new HashMap<String, ByteIterator>();
 		map.put(mapKey, new StringByteIterator(mapValue));
-		client.insert(bucketName, keyInBucket, map);
-		// Read operation
-		HashMap<String, ByteIterator> readMap = new HashMap<String, ByteIterator>();
-		int success = client.read(bucketName, keyInBucket, null, readMap);
+		int success = client.insert(bucketName, keyInBucket, map);
 		// Assert reads
+		assertTrue(success == 0);
+		HashMap<String, ByteIterator> readMap = new HashMap<String, ByteIterator>();
+		success = client.read(bucketName, keyInBucket, null, readMap);
 		assertTrue(success == 0);
 		assertTrue(readMap.size() == 1);
 		ByteIterator byteIterator = readMap.get(mapKey);
 		assertEquals(byteIterator.toString(), mapValue);
+		// Update operation
+		String updatedValue = "updatedValue";
+		HashMap<String, ByteIterator> valuesToUpdate = new HashMap<String, ByteIterator>();
+		valuesToUpdate.put(mapKey, new StringByteIterator(updatedValue));
+		success = client.update(bucketName, keyInBucket, valuesToUpdate);
+		// Assert update
+		assertTrue(success == 0);
+		readMap = new HashMap<String, ByteIterator>();
+		success = client.read(bucketName, keyInBucket, null, readMap);
+		assertTrue(success == 0);
+		assertTrue(readMap.size() == 1);
+		assertEquals(readMap.get(mapKey).toString(), updatedValue);
 		// Delete operation
 		success = client.delete(bucketName, keyInBucket);
 		// Assert deletion
