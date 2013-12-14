@@ -2,6 +2,11 @@ package riakBinding.java;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
+
+import org.json.simple.JSONObject;
+import org.json.simple.parser.JSONParser;
+import org.json.simple.parser.ParseException;
 
 import com.yahoo.ycsb.ByteIterator;
 import com.yahoo.ycsb.StringByteIterator;
@@ -30,6 +35,27 @@ public class StringToStringMap extends HashMap<String, String>{
 
 	public StringToStringMap(){
 		super();
+	}
+	
+	/*
+	 * Extracts only the string values from the json string. 
+	 * Assumes the json string only contains simple objects (no arrays, etc). 
+	 * 
+	 *  Parsed mapreduce result
+	 */
+	public StringToStringMap(String contentOfMapAsJson) throws ParseException{
+		super();
+		JSONParser parser = new JSONParser();
+		JSONObject jsonObj = (JSONObject) parser.parse(contentOfMapAsJson);
+		@SuppressWarnings("unchecked")
+		Set<String> keys = jsonObj.keySet();
+		for(String key : keys){
+			Object value = jsonObj.get(key);
+			// Remove key from json string
+			if(value instanceof String){
+				super.put(key, (String) value);
+			}
+		}
 	}
 	
 	public StringToStringMap(Map<String, ByteIterator> otherMap){

@@ -1,5 +1,6 @@
 package riakBinding.java;
 
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -14,6 +15,9 @@ import com.basho.riak.client.cap.Quora;
 import com.basho.riak.client.operations.DeleteObject;
 import com.basho.riak.client.operations.FetchObject;
 import com.basho.riak.client.operations.StoreObject;
+import com.basho.riak.client.query.BucketMapReduce;
+import com.basho.riak.client.query.MapReduceResult;
+import com.basho.riak.client.query.functions.JSSourceFunction;
 import com.basho.riak.client.raw.http.HTTPClientConfig;
 import com.basho.riak.client.raw.http.HTTPClusterConfig;
 import com.yahoo.ycsb.ByteIterator;
@@ -42,9 +46,9 @@ public class RiakClient extends DB {
 
 	public static final int OK = 0;
 	public static final int ERROR = -1;
-	private static final Quora DEFAULT_READ_QUORUM = Quora.ONE;
-	private static final Quora DEFAULT_WRITE_QUORUM = Quora.ONE;
-	private static final Quora DEFAULT_DELETE_QUORA = Quora.ONE;
+	private static final Quora DEFAULT_READ_QUORUM = Quora.QUORUM;
+	private static final Quora DEFAULT_WRITE_QUORUM = Quora.QUORUM;
+	private static final Quora DEFAULT_DELETE_QUORA = Quora.QUORUM;
 	
 	private final int maxConnections = 50;
 	private IRiakClient client;
@@ -97,8 +101,12 @@ public class RiakClient extends DB {
 		try {
 			Bucket bucket = this.client.fetchBucket(bucketName).execute();
 			FetchObject<StringToStringMap> fetchObj = bucket.fetch(key, StringToStringMap.class);
-			return fetchObj.r(DEFAULT_READ_QUORUM).execute();
-		} catch (RiakRetryFailedException exc) {
+			StringToStringMap result = fetchObj.r(DEFAULT_READ_QUORUM).execute();
+			if(result == null)
+				throw new Exception("key not found" + key);
+			else
+				return result;
+		} catch (Exception exc) {
 			return null;
 		}
 	}
@@ -108,7 +116,7 @@ public class RiakClient extends DB {
 			Bucket bucket = this.client.fetchBucket(bucketName).execute();
 			StoreObject<StringToStringMap> storeObject = bucket.store(key, dataToWrite);
 			storeObject.w(DEFAULT_WRITE_QUORUM).execute();
-		} catch (RiakRetryFailedException e) {
+		} catch (Exception e) {
 			return ERROR;
 		}
 		return OK;
@@ -145,14 +153,59 @@ public class RiakClient extends DB {
 		}
 		return OK;
 	}
-
+	
 	@Override
 	public int scan(String table, String startkey, int recordcount,
 			Set<String> fields, Vector<HashMap<String, ByteIterator>> result) {
-		//TODO: implement
-		throw new UnsupportedOperationException("not implemented");
+		BucketMapReduce m = this.client.mapReduce(table);
+		m.addMapPhase(new JSSourceFunction(getMapPhaseFunction(startkey)), false);
+		m.addReducePhase(new JSSourceFunction(getReducePhaseFunction(recordcount)), true);
+		MapReduceResult mapReduceResult;
+		try {
+			mapReduceResult = m.execute();
+		} catch (RiakException e) {
+			return ERROR;
+		}
+		Collection<StringToStringMap> mapredResult = mapReduceResult.getResult(StringToStringMap.class);
+		this.putScanResultInResultMap(mapredResult, fields, result);
+		return OK;
 	}
-
+	
+	private void putScanResultInResultMap(Collection<StringToStringMap> mapredResult, Set<String> fields, 
+													Vector<HashMap<String, ByteIterator>> result){
+		for(StringToStringMap currentMap: mapredResult){
+			HashMap<String, ByteIterator> mapToAdd = new HashMap<String, ByteIterator>();
+			if(fields == null)
+				this.copyAllFieldsToResultMap(currentMap, mapToAdd);
+			else
+				this.copyRequestedFieldsToResultMap(fields, currentMap, mapToAdd);
+			result.add(mapToAdd);
+		}
+	}
+	
+	private String getMapPhaseFunction(String startKey){
+		return "function(riakObject){ " +
+				"var numPartCurrentKey = parseInt(riakObject.key.substring(4)); " +
+				"var numPartStartKey = parseInt(\"" + startKey + "\".substring(4)); " +
+				"var value = riakObject.values[0].data; " +
+				"if(numPartCurrentKey >= numPartStartKey){ " +
+                	"parsedValue = JSON.parse(value);" +
+                	"parsedValue.key = numPartCurrentKey; " +
+                	"return [JSON.stringify(parsedValue)]; }" + 
+                "else {" + 
+                	"return []; }" +
+               "} ";
+	}
+	
+	private String getReducePhaseFunction(int amountOfValuesToRetrieve){
+		return  "function(keyValuePairs){ " +
+				 "var amount = " + amountOfValuesToRetrieve + "; " +
+				 "var sortedPairs = keyValuePairs.sort(function(a, b) { parsedA = JSON.parse(a); parsedB = JSON.parse(b); " +
+				 														"return (parsedA.key < parsedB.key ? -1 : ( parsedA.key > parsedB.key ? 1 : 0)); }); " +
+				 "return sortedPairs.slice(0,amount); " +
+                 "} ";
+	}
+	
 	@Override
 	public int update(String bucketName, String key,
 			HashMap<String, ByteIterator> values) {
