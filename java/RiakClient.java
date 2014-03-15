@@ -51,19 +51,15 @@ public class RiakClient extends DB {
 	private static final Quora DEFAULT_READ_QUORUM = Quora.QUORUM;
 	private static final Quora DEFAULT_WRITE_QUORUM = Quora.QUORUM;
 	private static final Quora DEFAULT_DELETE_QUORA = Quora.QUORUM;
+	public static final String WRITE_NODE_PROPERTY = "writenode";
 	
 	private final int maxConnections = 50;
-	private IRiakClient client;
-
-	// Constructor for testing purposes
-	public RiakClient(IRiakClient client){
-		if(client == null)
-			throw new IllegalArgumentException("cient is null");
-		this.client = client;
-	}
+	private IRiakClient clientForModifications;
+	private IRiakClient clientForConsistencyChecks;
 	
 	public RiakClient(){
-		this.client = null;
+		this.clientForModifications = null;
+		this.clientForConsistencyChecks = null;
 	}
 	
 	private String[] getIpAddressesOfNodes() throws DBException {
@@ -72,50 +68,64 @@ public class RiakClient extends DB {
 			throw new DBException("Required property \"hosts\" missing for RiakClient");
 		return hosts.split(",");
 	}
-
-	private HTTPClusterConfig getClusterConfiguration() throws DBException {
-		String[] hosts = this.getIpAddressesOfNodes();
+	
+	private HTTPClusterConfig getClusterConfiguration(String[] hosts) throws DBException {
 		HTTPClusterConfig clusterConfig = new HTTPClusterConfig(
 				this.maxConnections);
 		HTTPClientConfig httpClientConfig = HTTPClientConfig.defaults();
 		clusterConfig.addHosts(httpClientConfig, hosts);
 		return clusterConfig;
 	}
-
-	@Override
-	public void init() throws DBException {
-		HTTPClusterConfig clusterConfig = getClusterConfiguration();
+	
+	private IRiakClient createRiakClient(String[] hosts) throws DBException{
+		HTTPClusterConfig clusterConfig = getClusterConfiguration(hosts);
 		try {
-			this.client = RiakFactory.newClient(clusterConfig);
+			return RiakFactory.newClient(clusterConfig);
 		} catch (RiakException e) {
 			throw new DBException("Unable to connect to cluster nodes");
 		}
 	}
-
+	
+	@Override
+	public void init() throws DBException {
+		String[] allHosts = this.getIpAddressesOfNodes();
+		this.clientForConsistencyChecks = this.createRiakClient(allHosts);
+		String writeNode = getProperties().getProperty(WRITE_NODE_PROPERTY);
+		if(writeNode == null)
+			this.clientForModifications = this.clientForConsistencyChecks;
+		else
+			this.clientForModifications = this.createRiakClient(new String[]{writeNode});
+	}
+	
 	@Override
 	public void cleanup() throws DBException {
-		if (this.client != null) {
-			this.client.shutdown();
-		}
+		this.shutdownAllClients();
 	}
-
-	private StringToStringMap executeReadQuery(String bucketName, String key) {
+	
+	private void shutdownAllClients(){
+		this.shutdownClient(this.clientForModifications);
+		this.shutdownClient(this.clientForConsistencyChecks);
+	}
+	
+	private void shutdownClient(IRiakClient client){
+		if(client != null)
+			client.shutdown();
+	}
+	
+	private StringToStringMap executeReadQuery(IRiakClient client, String bucketName, String key) {
 		try {
-			Bucket bucket = this.client.fetchBucket(bucketName).execute();
+			Bucket bucket = client.fetchBucket(bucketName).execute();
 			FetchObject<StringToStringMap> fetchObj = bucket.fetch(key, StringToStringMap.class);
-			StringToStringMap result = fetchObj.r(DEFAULT_READ_QUORUM).execute();
-			if(result == null)
-				throw new Exception("key not found" + key);
-			else
-				return result;
+			return fetchObj.r(DEFAULT_READ_QUORUM).execute();
 		} catch (Exception exc) {
+			System.out.println("EXCEPTION: " + exc);
 			return null;
 		}
 	}
 	
-	private int executeWriteQuery(String bucketName, String key, StringToStringMap dataToWrite){
+	private int executeWriteQuery(IRiakClient client, String bucketName, String key, StringToStringMap dataToWrite){
 		try {
-			Bucket bucket = this.client.fetchBucket(bucketName).execute();
+			Bucket bucket = client.fetchBucket(bucketName).execute();
 			StoreObject<StringToStringMap> storeObject = bucket.store(key, dataToWrite);
 			storeObject.w(DEFAULT_WRITE_QUORUM).execute();
 		} catch (Exception e) {
@@ -141,6 +151,20 @@ public class RiakClient extends DB {
 		}
 	}
 	
+	private StringToStringMap executeReadQuery(String bucketName, String key) {
+		try {
+			Bucket bucket = this.clientForConsistencyChecks.fetchBucket(bucketName).execute();
+			FetchObject<StringToStringMap> fetchObj = bucket.fetch(key, StringToStringMap.class);
+			StringToStringMap result = fetchObj.r(DEFAULT_READ_QUORUM).execute();
+			if(result == null)
+				throw new Exception("key not found" + key);
+			else
+				return result;
+		} catch (Exception exc) {
+			return null;
+		}
+	}
+	
 	@Override
 	public int read(String bucketName, String key, Set<String> fields,
 			HashMap<String, ByteIterator> result) {
@@ -159,32 +183,20 @@ public class RiakClient extends DB {
 	@Override
 	public int scan(String table, String startkey, int recordcount,
 			Set<String> fields, Vector<HashMap<String, ByteIterator>> result) {
-		BucketMapReduce m = this.client.mapReduce(table);
+		BucketMapReduce m = this.clientForConsistencyChecks.mapReduce(table);
 		m.addMapPhase(new JSSourceFunction(getMapPhaseFunction(startkey)), false);
 		m.addReducePhase(new JSSourceFunction(getReducePhaseFunction(recordcount)), true);
 		MapReduceResult mapReduceResult;
 		try {
 			mapReduceResult = m.execute();
-		} catch (RiakException e) {
+		} catch (Exception e) {
 			return ERROR;
 		}
 		Collection<StringToStringMap> mapredResult = mapReduceResult.getResult(StringToStringMap.class);
 		this.putScanResultInResultMap(mapredResult, fields, result);
 		return OK;
 	}
-	
-	private void putScanResultInResultMap(Collection<StringToStringMap> mapredResult, Set<String> fields, 
-													Vector<HashMap<String, ByteIterator>> result){
-		for(StringToStringMap currentMap: mapredResult){
-			HashMap<String, ByteIterator> mapToAdd = new HashMap<String, ByteIterator>();
-			if(fields == null)
-				this.copyAllFieldsToResultMap(currentMap, mapToAdd);
-			else
-				this.copyRequestedFieldsToResultMap(fields, currentMap, mapToAdd);
-			result.add(mapToAdd);
-		}
-	}
-	
+
 	private String getMapPhaseFunction(String startKey){
 		return "function(riakObject){ " +
 				"var numPartCurrentKey = parseInt(riakObject.key.substring(4)); " +
@@ -208,37 +220,52 @@ public class RiakClient extends DB {
                  "} ";
 	}
 	
+	private void putScanResultInResultMap(
+			Collection<StringToStringMap> mapredResult, Set<String> fields,
+			Vector<HashMap<String, ByteIterator>> result) {
+		for (StringToStringMap currentMap : mapredResult) {
+			HashMap<String, ByteIterator> mapToAdd = new HashMap<String, ByteIterator>();
+			if (fields == null)
+				this.copyAllFieldsToResultMap(currentMap, mapToAdd);
+			else
+				this.copyRequestedFieldsToResultMap(fields, currentMap,
+						mapToAdd);
+			result.add(mapToAdd);
+		}
+	}
+	
 	@Override
 	public int update(String bucketName, String key,
 			HashMap<String, ByteIterator> values) {
-		StringToStringMap queryResult = this.executeReadQuery(bucketName, key);
+		StringToStringMap queryResult = this.executeReadQuery(this.clientForModifications, bucketName, key);
 		if(queryResult == null)
 			return ERROR;
 		for(String fieldToUpdate: values.keySet()){
 			ByteIterator newValue = values.get(fieldToUpdate);
 			queryResult.put(fieldToUpdate, newValue);
 		}
-		return this.executeWriteQuery(bucketName, key, queryResult);
+		return this.executeWriteQuery(this.clientForModifications, bucketName, key, queryResult);
 	}
 
 	@Override
 	public int insert(String bucketName, String key,
 			HashMap<String, ByteIterator> values) {
 		StringToStringMap dataToInsert = new StringToStringMap(values);
-		return this.executeWriteQuery(bucketName, key, dataToInsert);
+		return this.executeWriteQuery(this.clientForModifications, bucketName, key, dataToInsert);
 	}
-
+	
 	@Override
 	public int delete(String bucketName, String key) {
 		try {
-			Bucket bucket = this.client.fetchBucket(bucketName).execute();
+			Bucket bucket = this.clientForModifications.fetchBucket(bucketName).execute();
 			DeleteObject delObj = bucket.delete(key);
 			delObj.rw(DEFAULT_DELETE_QUORA).execute();
 		} catch (RiakRetryFailedException e) {
 			return ERROR;
-		} catch (RiakException e) {
+		} catch (Exception e) {
 			return ERROR;
 		}
 		return OK;
 	}
+
 }
