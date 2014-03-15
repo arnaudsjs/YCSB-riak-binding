@@ -62,6 +62,15 @@ public class RiakClient extends DB {
 		this.clientForConsistencyChecks = null;
 	}
 	
+	// Constructor for testing purposes
+
+	public RiakClient(IRiakClient client) {
+		if (client == null)
+			throw new IllegalArgumentException("cient is null");
+		this.clientForModifications = client;
+		this.clientForConsistencyChecks = client;
+	}
+	
 	private String[] getIpAddressesOfNodes() throws DBException {
 		String hosts = getProperties().getProperty("hosts");
 		if (hosts == null)
