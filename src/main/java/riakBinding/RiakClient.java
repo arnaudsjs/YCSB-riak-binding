@@ -1,4 +1,4 @@
-package riakBinding.java;
+package riakBinding;
 
 import java.util.Collection;
 import java.util.HashMap;
@@ -24,7 +24,7 @@ import com.yahoo.ycsb.ByteIterator;
 import com.yahoo.ycsb.DB;
 import com.yahoo.ycsb.DBException;
 
-import consistencyTests.util.StringToStringMap;
+import riakBinding.StringToStringMap;
 
 /*
 Copyright 2013 KU Leuven Research and Development - iMinds - Distrinet

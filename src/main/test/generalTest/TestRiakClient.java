@@ -1,4 +1,4 @@
-package riakBinding.test;
+package generalTest;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
@@ -8,7 +8,7 @@ import java.util.HashMap;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-import riakBinding.java.RiakClient;
+import riakBinding.RiakClient;
 
 import com.basho.riak.client.IRiakClient;
 import com.basho.riak.client.RiakException;
